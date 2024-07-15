@@ -1,0 +1,229 @@
+## Lucas Scheffer
+## GRR20207138
+## Análise de Sistemas de Recomendação
+## Recomendação de Filmes utilizando a base MovieLens
+## Estudo sobre os diferentes tipos de sistemas de recomendação, e também como
+## eles interagem com a base de dados.
+
+set.seed(2024)# para fins de reprodutibilidade dos resultados, vamos
+# fixar uma semente
+
+# Carregamento dos pacotes necessários
+
+if (!"tidyverse" %in% rownames(installed.packages())) {
+  install.packages("tidyverse")
+}
+
+if (!"recommenderlab" %in% rownames(installed.packages())) {
+  install.packages("recommenderlab")
+}
+if (!"paletteer" %in% rownames(installed.packages())) {
+  install.packages("paletteer")
+}
+if (!"viridis" %in% rownames(installed.packages())) {
+  install.packages("viridis")
+}
+library(recommenderlab) # para o sistema de recomendação
+library(tidyverse)      # para criação de gráficos e manipulação de dados
+library(paletteer)      # para paleta de cores
+library(viridis)
+
+# Leitura dos dados e análises iniciais das bases
+
+data("MovieLense")      # carregamento da base MovieLense
+MovieLense              # entendimento inicial sobre o que é o objeto MovieLense
+glimpse(MovieLenseMeta) # análise superficial sobre como a base de metadados é
+glimpse(MovieLenseUser) # análise superficial sobre como a base de usuário é
+
+class(MovieLense)       # a classe de MovieLense
+MovieLense@data         # entendendo como estão os dados das ratings dos filmes
+
+# Análise exploratória da base
+
+## Agora vamos ver as similaridades entre os 10 primeiros usuários:
+usuario_similaridade <- similarity(MovieLense[1:10, ], method = "cosine", which =
+                                     "users")
+image(as.matrix(usuario_similaridade), main = "Similaridade entre os 10 primeiros usuários")
+
+## também conseguimos fazer essa mesma análise exploratoria com os filmes:
+item_similaridade <- similarity(MovieLense[, 1:10], method = "cosine", which = "items")
+image(as.matrix(item_similaridade), main = "Similaridade entre os 10 primeiros filmes")
+## Agora vamos para a análise das notas dadas
+notas <- as.vector(MovieLense@data) |>
+  data.frame()
+names(notas) <- "notas"
+
+notas %>%
+  group_by(notas) %>%
+  summarise(qtde = n()) %>%
+  ggplot(aes(x = factor(notas), y = qtde)) +
+  geom_bar(stat = "identity", aes(colour = "#d32225", fill = "#d32225")) +
+  geom_text(aes(label = qtde), vjust = -0.5, color = "black") +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = ""
+  ) +
+  ggtitle("Quantidade de notas")
+# Agora sem as notas 0
+notas %>%
+  filter(notas != 0) %>%
+  group_by(notas) %>%
+  summarise(qtde = n()) %>%
+  ggplot(aes(x = factor(notas), y = qtde)) +
+  geom_bar(stat = "identity", aes(colour = "indianred", fill = "indianred")) +
+  geom_text(aes(label = qtde), vjust = -0.5, color = "black") +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = ""
+  ) +
+  ggtitle("Quantidade de notas")
+# Agora veremos as visualizações por filme
+dados_filmes <- data.frame(filme = names(colCounts(MovieLense)),
+                           visualizacoes = colCounts(MovieLense)) %>%
+  arrange(desc(visualizacoes))
+dados_filmes$filme <- factor(dados_filmes$filme, levels = dados_filmes$filme)
+dados_filmes[1:8, ] %>%
+  ggplot(aes(x = filme, y = visualizacoes, fill = factor(filme))) +
+  geom_col() +
+  scale_fill_paletteer_d("colorBlindness::Blue2Gray8Steps") +
+  geom_text(aes(label = visualizacoes),
+            vjust = -0.5,
+            color = "black") +
+  theme(
+    axis.text.x = element_text(angle = 50, hjust = 1),
+    legend.position = "",
+    panel.background = element_rect(fill = "white"),
+  ) +
+  ggtitle("Visualizações por filme") + xlab("") + ylab("")
+image(as(MovieLense[rowCounts(MovieLense) > quantile(rowCounts(MovieLense), 0.98),
+                    colCounts(MovieLense) > quantile(colCounts(MovieLense), 0.98)],
+         "matrix"),
+      main = "Mapa de Calor das notas dos top 2% usuários e top 2% filmes",
+      col = colorRampPalette(c("yellow", "red"))(100))
+## Preparação dos dados
+# Agora vamos selecionar dados relevantes para que o algoritmo de sistema de
+# recomendação funcione corretamente. De acordo com Building a Recommendation
+# System with R, devemos escolher linhas que contenham um número razoável de dados.
+# Nesse caso, vamos escolher usuarios que avaliaram pelo menos 20 filmes e
+# filmes que foram visto pelo menos 50 vezes.
+(dados <- MovieLense[rowCounts(MovieLense) > 20, colCounts(MovieLense) >
+                       50])
+# Agora vamos para Item-Based Collaborative Filtering (IBCF)
+# Vamos separar a base de dados em teste e treino
+treino <- sample(c(T, F), nrow(dados), rep = T, p = c(0.75, 0.25))
+dados_treino <- dados[treino, ]
+dados_teste <- dados[!treino, ]
+
+IBCF_modelo <- Recommender(dados_treino, met = "IBCF", p = list(k = 30))
+n_recomendacoes <- 5
+IBCF_predicao <- predict(IBCF_modelo, 
+                         newdata = dados_teste, 
+                         n = n_recomendacoes)
+# IBCF_predicao@itemLabels[IBCF_predicao@items[[1]]]
+IBCF_matrix <- sapply(IBCF_predicao@items,function(x) {
+  colnames(dados)[x]
+})
+IBCF_matrix[, 1:3] # acessando as predições para os 3 primeiros usuários
+nitems <- factor(table(IBCF_matrix))
+data.frame(vezes_recomendadas = head(sort(nitems, decreasing = T), 10))
+
+# Iremos para o User-Based Collaborative Filtering
+UCBF_modelo <- Recommender(dados_treino, 
+                           met = "UBCF")
+UBCF_predicao <- predict(UCBF_modelo, 
+                         newdata = dados_teste, 
+                         n = n_recomendacoes)
+UBCF_matrix <- sapply(UBCF_predicao@items, function(x) {
+  colnames(dados)[x]
+})
+UBCF_matrix[,1:3]
+nitems <- factor(table(UBCF_matrix))
+data.frame(vezes_recomendadas = head(sort(nitems, decreasing = T), 10))
+
+## Agora vamos verificar a precisão dos modelos
+
+validacao <- evaluationScheme(data=dados,method="cross-validation",
+                              k=6,given=15,goodRating=4)
+IBCF_val_Train <- Recommender(data=getData(validacao,"train"),
+                              method="IBCF",param=NULL)
+n_recomendacoes <- 10
+IBCF_val_Predict <- predict(IBCF_val_Train,newdata=getData(validacao,"known"),
+                            n=n_recomendacoes,type="ratings")
+
+IBCF_accuracy <- data.frame(calcPredictionAccuracy(x=IBCF_val_Predict,
+                                        data = getData(validacao,"unknown"),
+                                        byUser=T))
+IBCF_accuracy$method <- "IBCF"
+head(IBCF_accuracy,6)
+qplot(IBCF_accuracy[,"MAE"])+geom_histogram()
+UBCF_val_Train <- Recommender(data=getData(validacao,"train"),
+                              method="UBCF",param=NULL)
+UBCF_val_Predict <- predict(UBCF_val_Train,newdata=getData(validacao,"known"),
+                            n=n_recomendacoes,type="ratings")
+UBCF_accuracy <- data.frame(calcPredictionAccuracy(x=UBCF_val_Predict,
+                                        data = getData(validacao,"unknown"),
+                                        byUser=T))
+UBCF_accuracy$method <- "UBCF"
+head(UBCF_accuracy,6)
+qplot(calcPredictionAccuracy(x=UBCF_val_Predict,
+                             data = getData(validacao,"unknown"),
+                             byUser=T)[,"MAE"])+geom_histogram()
+accuracy <- rbind(IBCF_accuracy,UBCF_accuracy)
+accuracy <- accuracy %>% pivot_longer(!method,
+                                      names_to = "stat",
+                                      values_to = "value")
+accuracy %>% ggplot(aes(x=value,colour = method,fill = method))+
+  geom_histogram()+
+  facet_grid(method~stat)+
+  ggtitle("Estatísticas de desvio por método")
+accuracy %>% 
+  filter(value<5) %>% 
+  ggplot(aes(x=value,colour = method,fill = method))+
+  geom_histogram()+
+  facet_grid(method~stat)+
+  ggtitle("Estatísticas de desvio menores que 5 por método")
+
+resultados <- evaluate(x=validacao,
+                       method="IBCF",
+                       n=seq(10,100,5))
+# getConfusionMatrix(resultados)[1]
+avg(resultados)[,5:ncol(avg(resultados))]
+Reduce("+",getConfusionMatrix(resultados))[,c("TP","FP","FN","TN")]
+plot(resultados,annotate=T,main="Curva ROC") #TPR - True Positive Rate
+# FPR - False Positive Rate
+plot(resultados,'prec/rec',annotate=T,main="Precisão x Recall")
+
+resultados <- evaluate(x=validacao,
+                       method="UBCF",
+                       n=seq(10,100,5))
+# getConfusionMatrix(resultados)[1]
+avg(resultados)[,5:ncol(avg(resultados))]
+Reduce("+",getConfusionMatrix(resultados))[,c("TP","FP","FN","TN")]
+plot(resultados,annotate=T,main="Curva ROC") #TPR - True Positive Rate
+# FPR - False Positive Rate
+plot(resultados,'prec/rec',annotate=T,main="Precisão x Recall")
+
+# Comparando mais de um modelo juntamente:
+modelos <- list(IBCF_pearson=list(name="IBCF",param=list(method="pearson")), #IBCF-Pearson
+                UBCF_pearson=list(name="UBCF",param=list(method="pearson")), #UBCF-Pearson
+                IBCF_cosine=list(name="IBCF",param=list(method="cosine")),   #IBCF-Cosine
+                UBCF_cosine=list(name="UBCF",param=list(method="cosine")),   #UBCF-Cosine
+                aleatorio=list(name="RANDOM", param=NULL)                    #Aleatório
+                )
+n_recomendacoes <- c(1,2,3,4,5,seq(10,100,5))
+
+resultados_comparacao <- evaluate(x=validacao,
+                                  method = modelos,
+                                  n=n_recomendacoes)
+
+
+# par(mfrow=c(1,1))
+plot(resultados_comparacao,
+     annot=1,legend="bottomright")
+title("Curva ROC")
+
+plot(resultados_comparacao,"prec/rec",
+     annot=1,legend="bottomright")
+title("Precisão x Recall")
